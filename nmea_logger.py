@@ -6,10 +6,10 @@ import threading
 from datetime import datetime
 
 GPS_HOST = "127.0.0.1"
-GPS_PORT = 10110
+GPS_PORT = 2947
 
 DEPTH_HOST = "127.0.0.1"
-DEPTH_PORT = 10111
+DEPTH_PORT = 10110
 
 CSV_FILE = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
@@ -34,7 +34,6 @@ depth_data = {
 
 
 def parse_lat_lon(raw, direction):
-    """Convert NMEA lat/lon (ddmm.mmmm) to decimal degrees."""
     if not raw or not direction:
         return ""
     try:
@@ -42,6 +41,11 @@ def parse_lat_lon(raw, direction):
             degrees = float(raw[:2])
             minutes = float(raw[2:])
         else:
+            # Normalize to 5 integer digits before decimal (dddmm.mmmm)
+            dot = raw.index(".")
+            int_part = raw[:dot]
+            if len(int_part) < 5:
+                raw = raw.zfill(len(raw) + (5 - len(int_part)))
             degrees = float(raw[:3])
             minutes = float(raw[3:])
         decimal = degrees + minutes / 60.0
@@ -66,14 +70,14 @@ def parse_gga(fields):
 
 def parse_rmc(fields):
     """Parse $xxRMC - Recommended minimum data."""
-    if len(fields) < 8:
+    if len(fields) < 9:  # FIX: need at least 9 fields to read course at index 8
         return
     with lock:
         gps_data["utc_time"] = fields[1]
-        gps_data["latitude"] = parse_lat_lon(fields[2], fields[3])
-        gps_data["longitude"] = parse_lat_lon(fields[4], fields[5])
-        gps_data["speed_knots"] = fields[7] if len(fields) > 7 else ""
-        gps_data["course"] = fields[8] if len(fields) > 8 else ""
+        gps_data["latitude"] = parse_lat_lon(fields[3], fields[4])  # FIX: lat is [3]/[4], not [2]/[3]
+        gps_data["longitude"] = parse_lat_lon(fields[5], fields[6])  # FIX: lon is [5]/[6], not [4]/[5]
+        gps_data["speed_knots"] = fields[7]
+        gps_data["course"] = fields[8]
 
 
 def parse_dbt(fields):
@@ -96,6 +100,7 @@ def parse_dpt(fields):
 
 def process_sentence(sentence):
     """Parse an NMEA sentence and update state."""
+    # FIX: strip whitespace AFTER removing checksum so \r doesn't corrupt fields
     sentence = sentence.strip()
     if not sentence.startswith("$"):
         return False
@@ -103,8 +108,20 @@ def process_sentence(sentence):
     if "*" in sentence:
         sentence = sentence[:sentence.index("*")]
 
+    sentence = sentence.strip()  # FIX: strip again after checksum removal
+
     fields = sentence.split(",")
-    msg_type = fields[0][3:]
+    if len(fields[0]) < 4:
+        return False  # FIX: guard against malformed talker+sentence IDs
+
+    # Handle both $XXYYYY (talker+type) and $YYYY (no talker ID, e.g. $DBT)
+    tag = fields[0][1:]  # strip leading $
+    if len(tag) == 3:
+        msg_type = tag        # e.g. $DBT → "DBT"
+    elif len(tag) >= 5:
+        msg_type = tag[2:]    # e.g. $IIDBT → "DBT"
+    else:
+        return False
 
     if msg_type == "GGA":
         parse_gga(fields)
@@ -126,6 +143,10 @@ def tcp_listener(host, port, name):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((host, port))
             print(f"[{name}] Connected to {host}:{port}")
+
+            # gpsd requires this handshake to start sending NMEA sentences
+            sock.sendall(b'?WATCH={"enable":true,"nmea":true};\n')
+
             buf = ""
             while True:
                 data = sock.recv(1024)
