@@ -34,7 +34,6 @@ depth_data = {
 
 
 def parse_lat_lon(raw, direction):
-    """Convert NMEA lat/lon (ddmm.mmmm) to decimal degrees."""
     if not raw or not direction:
         return ""
     try:
@@ -42,6 +41,11 @@ def parse_lat_lon(raw, direction):
             degrees = float(raw[:2])
             minutes = float(raw[2:])
         else:
+            # Normalize to 5 integer digits before decimal (dddmm.mmmm)
+            dot = raw.index(".")
+            int_part = raw[:dot]
+            if len(int_part) < 5:
+                raw = raw.zfill(len(raw) + (5 - len(int_part)))
             degrees = float(raw[:3])
             minutes = float(raw[3:])
         decimal = degrees + minutes / 60.0
