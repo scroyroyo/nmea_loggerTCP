@@ -1,0 +1,1 @@
+This python scrip can take the local GPS data over an open TCP socket like the one GPSD creates along with the mnea data that typical depth sounders use and the data outputed by projects like open echo. 
